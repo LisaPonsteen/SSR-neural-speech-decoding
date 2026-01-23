@@ -11,9 +11,170 @@ import scipy.fftpack
 
 from pynwb import NWBHDF5IO
 import MelFilterBank as mel
+import phaseEM
+from joblib import Parallel, delayed
 
 #Small helper function to speed up the hilbert transform by extending the length of data to the next power of 2
 hilbert3 = lambda x: scipy.signal.hilbert(x, scipy.fftpack.next_fast_len(len(x)),axis=0)[:len(x)]
+
+def extractSSPE(data, initParams, use_channels=None, sr=1024, windowLength=0.05, frameshift=0.01):
+    """
+    alternative to extract HG, has the same output shapes.
+
+    Window data and extract frequency-band envelope using the hilbert transform
+    
+    Parameters
+    ----------
+    data: array (samples, channels)
+        EEG time series
+    sr: int
+        Sampling rate of the data
+    windowLength: float
+        Length of window (in seconds) in which spectrogram will be calculated
+    frameshift: float
+        Shift (in seconds) after which next window will be extracted
+    Returns
+    ----------
+    feat: array (windows, channels)
+        Frequency-band feature matrix
+    """
+    #Linear detrend
+    data = scipy.signal.detrend(data,axis=0)
+    #Number of windows
+    numWindows = int(np.floor((data.shape[0]-windowLength*sr)/(frameshift*sr)))
+    
+    #remove (harmonics of) line noise
+    for i in range (0,5):
+        sos = scipy.signal.iirfilter(4, [(i*100+49)/(sr/2),(i*100+51)/(sr/2)],btype='bandstop',output='sos')
+        data = scipy.signal.sosfiltfilt(sos,data,axis=0)
+
+    #for data.shape == (samples, channels):
+    if use_channels != None:
+        n_channels = len(use_channels)
+    else:
+        n_channels = data.shape[1]
+    n_freq = len(initParams["freqs"])
+    amp = np.zeros((data.shape[0], n_channels, n_freq)) #amp.shape = (time, channels, freqs)
+
+    '''
+    for ch in range(n_channels):
+        #for ch in use_channels: #can do this to speed things up for now we only do a few channels
+        d = data[:, ch]
+        # causal phase estimation
+        phase, allX_full, returnParams = phaseEM.causalPhaseEM_MKmdl_noSeg(
+            d, initParams, flagNoFit=True
+        )
+        # amplitude from oscillator states
+        #amp_ch = np.sqrt(allX_full[:, 0]**2 + allX_full[:, 1]**2)
+        #amp[:len(amp_ch), ch] = amp_ch
+        amp_ch = np.sqrt(
+            allX_full[:, :, 0]**2 +
+            allX_full[:, :, 1]**2
+        )
+        amp[:len(amp_ch), ch, :] = amp_ch
+    '''
+    # --- Parallel Processing Block ---
+    # We wrap the phaseEM call in a helper or call it directly.
+    # n_jobs=-1 uses all available CPU cores.
+    print(f"Starting parallel SSPE extraction for {n_channels} channels...")
+    
+    results = Parallel(n_jobs=-1)(
+        delayed(phaseEM.causalPhaseEM_MKmdl_noSeg)(
+            data[:, ch], 
+            initParams, 
+            flagNoFit=True
+        ) for ch in range(n_channels)
+    )
+    # results is now a list of tuples: [(phase, allX_full, returnParams), ...]
+    # ---------------------------------
+    
+    for ch_idx, (phase, allX_full, returnParams) in enumerate(results):
+        # allX_full shape is (time, freq, state_dim) where state_dim is usually 2 (sine/cosine)
+        amp_ch = np.sqrt(
+            allX_full[:, :, 0]**2 +
+            allX_full[:, :, 1]**2
+        )
+        amp[:len(amp_ch), ch_idx, :] = amp_ch
+
+    #Create feature space
+    feat = np.zeros((numWindows, n_channels * n_freq)) #feat.shape = (windows, channels * freqs)
+
+    for win in range(numWindows):
+        start= int(np.floor((win*frameshift)*sr))
+        stop = int(np.floor(start+windowLength*sr))
+        #feat[win,:] = np.mean(amp[start:stop,:],axis=0)
+        window_amp = np.mean(amp[start:stop, :, :], axis=0)  # (channels, freqs)
+        feat[win, :] = window_amp.reshape(-1)
+    return feat
+
+
+
+def extractSSPE_sequential(data, initParams, use_channels=None, sr=1024, windowLength=0.05, frameshift=0.01):
+    """
+    alternative to extract HG, has the same output shapes.
+
+
+    Parameters
+    ----------
+    data: array (samples, channels)
+        EEG time series
+    sr: int
+        Sampling rate of the data
+    windowLength: float
+        Length of window (in seconds) in which spectrogram will be calculated
+    frameshift: float
+        Shift (in seconds) after which next window will be extracted
+    Returns
+    ----------
+    feat: array (windows, channels)
+        Frequency-band feature matrix
+    """
+    eeg_sr=1024
+    #Linear detrend
+    data = scipy.signal.detrend(data,axis=0)
+    #Number of windows
+    numWindows = int(np.floor((data.shape[0]-windowLength*sr)/(frameshift*sr)))
+    
+    #remove (harmonics of) line noise
+    for i in range (0,5):
+        sos = scipy.signal.iirfilter(4, [(i*100+49)/(eeg_sr/2),(i*100+51)/(eeg_sr/2)],btype='bandstop',output='sos')
+        data = scipy.signal.sosfiltfilt(sos,data,axis=0)
+
+    #for data.shape == (samples, channels):
+    if use_channels != None:
+        n_channels = len(use_channels)
+    else:
+        n_channels = data.shape[1]
+    n_freq = len(initParams["freqs"])
+    amp = np.zeros((data.shape[0], n_channels, n_freq)) #amp.shape = (time, channels, freqs)
+
+    for ch in range(n_channels):
+        #for ch in use_channels: #can do this to speed things up for now we only do a few channels
+        d = data[:, ch]
+        # causal phase estimation
+        phase, allX_full, returnParams = phaseEM.causalPhaseEM_MKmdl_noSeg(
+            d, initParams, flagNoFit=True
+        )
+        # amplitude from oscillator states
+        #amp_ch = np.sqrt(allX_full[:, 0]**2 + allX_full[:, 1]**2)
+        #amp[:len(amp_ch), ch] = amp_ch
+        amp_ch = np.sqrt(
+            allX_full[:, :, 0]**2 +
+            allX_full[:, :, 1]**2
+        )
+        amp[:len(amp_ch), ch, :] = amp_ch
+        
+
+    #Create feature space
+    feat = np.zeros((numWindows, n_channels * n_freq)) #feat.shape = (windows, channels * freqs)
+
+    for win in range(numWindows):
+        start= int(np.floor((win*frameshift)*sr))
+        stop = int(np.floor(start+windowLength*sr))
+        #feat[win,:] = np.mean(amp[start:stop,:],axis=0)
+        window_amp = np.mean(amp[start:stop, :, :], axis=0)  # (channels, freqs)
+        feat[win, :] = window_amp.reshape(-1)
+    return feat
 
 def extractHG(data, sr, windowLength=0.05, frameshift=0.01):
     """
@@ -103,7 +264,9 @@ def downsampleLabels(labels, sr, windowLength=0.05, frameshift=0.01):
     for w in range(numWindows):
         start = int(np.floor((w*frameshift)*sr))
         stop = int(np.floor(start+windowLength*sr))
-        newLabels[w]=scipy.stats.mode(labels[start:stop])[0][0].encode("ascii", errors="ignore").decode()
+        vals, counts = np.unique(labels[start:stop], return_counts=True)
+        newLabels[w] = vals[np.argmax(counts)]
+        #newLabels[w]=scipy.stats.mode(labels[start:stop])[0][0].encode("ascii", errors="ignore").decode()
     return newLabels
 
 def extractMelSpecs(audio, sr, windowLength=0.05, frameshift=0.01):
@@ -128,7 +291,7 @@ def extractMelSpecs(audio, sr, windowLength=0.05, frameshift=0.01):
         Logarithmic mel scaled spectrogram
     """
     numWindows=int(np.floor((audio.shape[0]-windowLength*sr)/(frameshift*sr)))
-    win = scipy.hanning(np.floor(windowLength*sr + 1))[:-1]
+    win = scipy.signal.windows.hann(int(np.floor(windowLength*sr + 1)))[:-1]
     spectrogram = np.zeros((numWindows, int(np.floor(windowLength*sr / 2 + 1))),dtype='complex')
     for w in range(numWindows):
         start_audio = int(np.floor((w*frameshift)*sr))
@@ -169,10 +332,13 @@ if __name__=="__main__":
     frameshift = 0.01
     modelOrder = 4
     stepSize = 5
-    path_bids = r'./SingleWordProductionDutch-iBIDS'
+    path_bids = '/Users/lisa/Documents/DSAI_year2/Marble/SingleWordProductionDutch/SingleWordProductionDutch-iBIDS'
     path_output = r'./features'
-    participants = pd.read_csv(os.path.join(path_bids,'participants.tsv'), delimiter='\t')
-    for p_id, participant in enumerate(participants['participant_id']):
+    #participants = pd.read_csv(os.path.join(path_bids,'participants.tsv'), delimiter='\t')
+    #for p_id, participant in enumerate(participants['participant_id']):
+    pts = ['sub-01']
+    Fs = [[63, 78, 106]]
+    for participant, use_freqs in zip(pts, Fs):
         
         #Load data
         io = NWBHDF5IO(os.path.join(path_bids,participant,'ieeg',f'{participant}_task-wordProduction_ieeg.nwb'), 'r')
@@ -192,12 +358,25 @@ if __name__=="__main__":
         channels = np.array(channels['name'])
 
         #Extract HG features
-        feat = extractHG(eeg,eeg_sr, windowLength=winL,frameshift=frameshift)
-
+        #feat = extractHG(eeg,eeg_sr, windowLength=winL,frameshift=frameshift)
+        
+        #for participant, use_freqs in zip(pts, Fs):
+        initParams = {
+            "freqs": use_freqs,
+            "Fs": eeg_sr,
+            "ampVec": [0.99] * len(use_freqs),
+            "sigmaFreqs": [0.1] * len(use_freqs),
+            "sigmaObs": 1,
+            "windowSize": 2000,
+            "lowFreqBand": None
+            #"lowFreqBand": bands[0] if len(bands) == 1 else bands,
+            }
+        feat = extractSSPE(eeg, initParams)
+        print("extracted features")
         #Stack features
         feat = stackFeatures(feat,modelOrder=modelOrder,stepSize=stepSize)
         
-        #Process Audio
+        #Process Audiox
         target_SR = 16000
         audio = scipy.signal.decimate(audio,int(audio_sr / target_SR))
         audio_sr = target_SR
@@ -222,7 +401,7 @@ if __name__=="__main__":
         feature_names = nameVector(channels[:,None], modelOrder=modelOrder)
 
         #Save everything
-        np.save(os.path.join(path_output,f'{participant}_feat.npy'), feat)
+        np.save(os.path.join(path_output,f'{participant}_SSPEfeat.npy'), feat)
         np.save(os.path.join(path_output,f'{participant}_procWords.npy'), words)
         np.save(os.path.join(path_output,f'{participant}_spec.npy'), melSpec)
         np.save(os.path.join(path_output,f'{participant}_feat_names.npy'), feature_names)

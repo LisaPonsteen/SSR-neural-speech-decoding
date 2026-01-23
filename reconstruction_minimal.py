@@ -46,7 +46,8 @@ def createAudio(spectrogram, audiosr=16000, winLength=0.05, frameshift=0.01):
 if __name__=="__main__":
     feat_path = r'./features'
     result_path = r'./results'
-    pts = ['sub-%02d'%i for i in range(1,11)]
+    #pts = ['sub-%02d'%i for i in range(1,11)]
+    pts = ['sub-01', 'sub-02', 'sub-03', 'sub-04', 'sub-05','sub-06','sub-07', 'sub-08', 'sub-09', 'sub-10'  ]
 
     winLength = 0.05
     frameshift = 0.01
@@ -133,6 +134,6 @@ if __name__=="__main__":
         wavfile.write(os.path.join(result_path,f'{pt}_orig_synthesized.wav'),int(audiosr),origWav)
 
     #Save results in numpy arrays          
-    np.save(os.path.join(result_path,'linearResults.npy'),allRes)
-    np.save(os.path.join(result_path,'randomResults.npy'),randomControl)
-    np.save(os.path.join(result_path,'explainedVariance.npy'),explainedVariance)
+    np.save(os.path.join(result_path,'HGlinearResults.npy'),allRes)
+    np.save(os.path.join(result_path,'HGrandomResults.npy'),randomControl)
+    np.save(os.path.join(result_path,'HGexplainedVariance.npy'),explainedVariance)

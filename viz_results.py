@@ -4,11 +4,30 @@ import matplotlib
 import matplotlib.pyplot as plt
 import scipy.io.wavfile as wavfile
 
+
+
+
 if __name__=="__main__":
     
     result_path = r'./results'
     #Load correlation results
-    allRes = np.load(os.path.join(result_path,'linearResults.npy'))
+    allRes = np.load(os.path.join(result_path,'HGlinearResults.npy'))
+    randomControl = np.load(os.path.join(result_path,'HGrandomResults.npy'))
+    explainedVariance = np.load(os.path.join(result_path,'HGexplainedVariance.npy'))
+
+    for p in range(0,10):
+        print("Sub-",p+1)
+        rs = allRes[p]
+        model_mean = rs.mean()
+        rand_mean = randomControl[p].mean()
+        rand_std = randomControl[p].std()
+        z = (model_mean - rand_mean) / rand_std
+        print(round(model_mean,2))
+        print(round(rand_mean,2),"±",round(rand_std,2))
+        print(round(explainedVariance[p].mean(),2))
+        print(round(z,2))
+        
+    allRes = np.load(os.path.join(result_path,'HGlinearResults.npy'))
 
     colors = ['C' + str(i) for i in range(10)]
 
