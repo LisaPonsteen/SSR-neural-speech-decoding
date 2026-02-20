@@ -42,12 +42,13 @@ def createAudio(spectrogram, audiosr=16000, winLength=0.05, frameshift=0.01):
     scaled = np.int16(rec_audio/np.max(np.abs(rec_audio)) * 32767)
     return scaled
 
+def reconstruct(pts, SSPEfeatures=True):
 
-if __name__=="__main__":
     feat_path = r'./features'
     result_path = r'./results'
     #pts = ['sub-%02d'%i for i in range(1,11)]
-    pts = ['sub-01', 'sub-02', 'sub-03', 'sub-04', 'sub-05','sub-06','sub-07', 'sub-08', 'sub-09', 'sub-10'  ]
+    if pts == None:
+        pts = ['sub-01', 'sub-02', 'sub-03', 'sub-04', 'sub-05','sub-06','sub-07', 'sub-08', 'sub-09', 'sub-10']
 
     winLength = 0.05
     frameshift = 0.01
@@ -67,8 +68,13 @@ if __name__=="__main__":
 
     for pNr, pt in enumerate(pts):
         #Load the data
+        if SSPEfeatures:
+            data = np.load(os.path.join(feat_path,f'{pt}_SSPEfeat.npy'))
+        else:
+            data = np.load(os.path.join(feat_path,f'{pt}_feat.npy'))
+        
+
         spectrogram = np.load(os.path.join(feat_path,f'{pt}_spec.npy'))
-        data = np.load(os.path.join(feat_path,f'{pt}_feat.npy'))
         labels = np.load(os.path.join(feat_path,f'{pt}_procWords.npy'))
         featName = np.load(os.path.join(feat_path,f'{pt}_feat_names.npy'))
         
@@ -80,8 +86,12 @@ if __name__=="__main__":
             #Z-Normalize with mean and std from the training data
             mu=np.mean(data[train,:],axis=0)
             std=np.std(data[train,:],axis=0)
+
             trainData=(data[train,:]-mu)/std
             testData=(data[test,:]-mu)/std
+
+            # Convert all NaNs to 0.0 before passing to PCA
+            trainData = np.nan_to_num(trainData, nan=0.0)
 
             #Fit PCA to training data
             pca.fit(trainData)
@@ -133,7 +143,15 @@ if __name__=="__main__":
         origWav = createAudio(spectrogram,audiosr=audiosr,winLength=winLength,frameshift=frameshift)
         wavfile.write(os.path.join(result_path,f'{pt}_orig_synthesized.wav'),int(audiosr),origWav)
 
-    #Save results in numpy arrays          
-    np.save(os.path.join(result_path,'HGlinearResults.npy'),allRes)
-    np.save(os.path.join(result_path,'HGrandomResults.npy'),randomControl)
-    np.save(os.path.join(result_path,'HGexplainedVariance.npy'),explainedVariance)
+    #Save results in numpy arrays   
+    if SSPEfeatures:
+        np.save(os.path.join(result_path,'SSPElinearResults.npy'),allRes)
+        np.save(os.path.join(result_path,'SSPErandomResults.npy'),randomControl)
+        np.save(os.path.join(result_path,'SSPEexplainedVariance.npy'),explainedVariance)
+    else:
+        np.save(os.path.join(result_path,'HGlinearResults.npy'),allRes)
+        np.save(os.path.join(result_path,'HGrandomResults.npy'),randomControl)
+        np.save(os.path.join(result_path,'HGexplainedVariance.npy'),explainedVariance)
+
+if __name__=="__main__":
+    reconstruct(None)
