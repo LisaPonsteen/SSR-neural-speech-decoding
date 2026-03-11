@@ -64,12 +64,12 @@ def causalPhaseEM_MKmdl_noSeg(y, initParams, flagNoFit):
     data = y[:windowSize]
 
     if not flagNoFit:
-        # Estimate oscillator parameters using EM (placeholder for your MATLAB fit_MKModel_multSines)
+        # Estimate oscillator parameters using EM
         omega, ampEst, allQ, R, stateVec, stateCov = fit_MKModel_multSines(
             data, freqs, Fs, ampVec, sigmaFreqs, sigmaObs
         )
 
-        if lowFreqBand != None:
+        if lowFreqBand is not None:
             lowFreqLoc = np.where((omega > lowFreqBand[0]) & (omega < lowFreqBand[1]))[0]
             if len(lowFreqLoc) == 0:
                 lowFreqLoc = [np.argmin(np.abs(freqs - np.mean(lowFreqBand)))]
@@ -93,7 +93,7 @@ def causalPhaseEM_MKmdl_noSeg(y, initParams, flagNoFit):
         stateCov = np.eye(len(freqs) * 2) * 0.001
         stateCov = stateCov[:, :, np.newaxis]
 
-    if lowFreqBand != None and len(lowFreqLoc) == 0:
+    if lowFreqBand is not None and len(lowFreqLoc) == 0:
         print("Low freq band incorrect or no signal; retaining initial params.")
         omega = freqs
         ampEst = ampVec
@@ -186,7 +186,7 @@ def causalPhaseEM_MKmdl_noSeg(y, initParams, flagNoFit):
         P = P_new
         x = x_new
 
-    if lowFreqBand != None and lowFreqLoc[0] == 0: 
+    if lowFreqBand is not None and lowFreqLoc[0] == 0: 
         print('lowFreqLoc = 0')
     
     # Replaced:

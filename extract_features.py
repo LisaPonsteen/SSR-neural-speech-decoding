@@ -94,10 +94,10 @@ def extractSSPE(data, initParams_list, use_channels=None, sr=1024, windowLength=
     )
     # results is now a list of tuples: [(phase, allX_full, returnParams), ...]
     
-    # 1. Determine the total number of oscillators across all channels to avoid padding
+    # determine the total number of oscillators across all channels to avoid padding
     total_oscillators = sum(allX_full.shape[1] for _, allX_full, _ in results)
     
-    # 2. Pre-allocate the feature matrix with the EXACT size needed
+    # pre-allocate the feature matrix with the EXACT size needed
     feat = np.zeros((numWindows, total_oscillators))
     
     # 3. Iterate through channels and fill columns sequentially
