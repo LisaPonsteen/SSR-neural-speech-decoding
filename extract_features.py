@@ -57,34 +57,8 @@ def extractSSPE(data, initParams_list, use_channels=None, sr=1024, windowLength=
     else:
         n_channels = data.shape[1]
 
-    '''
-    for ch in range(n_channels):
-        #for ch in use_channels: #can do this to speed things up for now we only do a few channels
-        d = data[:, ch]
-        # causal phase estimation
-        phase, allX_full, returnParams = phaseEM.causalPhaseEM_MKmdl_noSeg(
-            d, initParams, flagNoFit=True
-        )
-        # amplitude from oscillator states
-        #amp_ch = np.sqrt(allX_full[:, 0]**2 + allX_full[:, 1]**2)
-        #amp[:len(amp_ch), ch] = amp_ch
-        amp_ch = np.sqrt(
-            allX_full[:, :, 0]**2 +
-            allX_full[:, :, 1]**2
-        )
-        amp[:len(amp_ch), ch, :] = amp_ch
-    '''
-    # --- Parallel Processing Block ---
-    # We wrap the phaseEM call in a helper or call it directly.
     # n_jobs=-1 uses all available CPU cores.
     print(f"Starting parallel SSPE extraction for {n_channels} channels...")
-    
-    # Find max number of frequencies across all channels for padding
-    #max_freq = max(len(params["freqs"]) for params in initParams_list)
-    #max_freq = 7
-    #amp = np.zeros((data.shape[0], n_channels, max_freq)) #amp.shape = (time, channels, max_freq)
-
-
     results = Parallel(n_jobs=-1)(
         delayed(phaseEM.causalPhaseEM_MKmdl_noSeg)(
             data[:, ch], 
@@ -100,7 +74,7 @@ def extractSSPE(data, initParams_list, use_channels=None, sr=1024, windowLength=
     # pre-allocate the feature matrix with the EXACT size needed
     feat = np.zeros((numWindows, total_oscillators))
     
-    # 3. Iterate through channels and fill columns sequentially
+    # iterate through channels and fill columns sequentially
     current_col = 0
 
     for ch_idx, (phase, allX_full, returnParams) in enumerate(results):
@@ -126,15 +100,6 @@ def extractSSPE(data, initParams_list, use_channels=None, sr=1024, windowLength=
             # Move to the next column in the global feature matrix
             current_col += 1
         #amp[:len(amp_ch), ch_idx, :n_freq_ch] = amp_ch
-
-    '''
-    for win in range(numWindows):
-        start= int(np.floor((win*frameshift)*sr))
-        stop = int(np.floor(start+windowLength*sr))
-        #feat[win,:] = np.mean(amp[start:stop,:],axis=0)
-        window_amp = np.mean(amp[start:stop, :, :], axis=0)  # (channels, freqs)
-        feat[win, :] = window_amp.reshape(-1)
-    '''
     
     return feat
 

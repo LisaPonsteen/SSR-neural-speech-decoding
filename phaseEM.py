@@ -37,168 +37,180 @@ def causalPhaseEM_MKmdl_noSeg(y, initParams, flagNoFit):
     """
     Real-time causal phase estimation using oscillator-based state-space model and EM parameter updates.
     """
+    try:
+        freqs = np.array(initParams["freqs"])
+        Fs = initParams["Fs"]
+        ampVec = np.array(initParams["ampVec"])
+        sigmaFreqs = np.array(initParams["sigmaFreqs"])
+        sigmaObs = initParams["sigmaObs"]
+        windowSize = initParams["windowSize"]
+        lowFreqBand = None ;np.array(initParams["lowFreqBand"])
+
+        if freqs is None or sigmaObs is None or Fs is None:
+            print(f"Missing params! Freqs: {freqs}, sigmaObs: {sigmaObs}, Fs: {Fs}")
+
+        assert len(freqs) == len(ampVec), 'amplitudes and frequencies must have the same size'
+
+        if windowSize < Fs:
+            print("The window size needs to be different. Setting it equal to sampling rate.")
+            windowSize = Fs
+
+        if len(y) < 2 * windowSize:
+            print(f"DEBUG: len(y) = {len(y)}, windowSize = {windowSize}, 2*windowSize = {2*windowSize}")
+            raise ValueError("Observation vector too short; must be at least 2x window size.")
+
+        data = y[:windowSize]
+
+        if data is None:
+            print('data is none')
+
+        if not flagNoFit:
+            # Estimate oscillator parameters using EM
+            omega, ampEst, allQ, R, stateVec, stateCov = fit_MKModel_multSines(
+                data, freqs, Fs, ampVec, sigmaFreqs, sigmaObs
+            )
+
+            '''if lowFreqBand is not None:
+                lowFreqLoc = np.where((omega > lowFreqBand[0]) & (omega < lowFreqBand[1]))[0]
+                if len(lowFreqLoc) == 0:
+                    lowFreqLoc = [np.argmin(np.abs(freqs - np.mean(lowFreqBand)))]
+                '''
+            returnParams = {
+                "freqs": omega,
+                "ampVec": ampEst,
+                "sigmaFreqs": allQ,
+                "sigmaObs": R,
+            }
+
+        else:
+            omega = freqs
+            ampEst = ampVec
+            allQ = sigmaFreqs
+            R = np.array([[sigmaObs]])
+        
+            returnParams = {}
+            lowFreqLoc = []
+            stateVec = np.zeros((len(freqs) * 2, 1))
+            stateCov = np.eye(len(freqs) * 2) * 0.001
+            stateCov = stateCov[:, :, np.newaxis]
+
+        ''' for now, lowfreq band is always none
+           if lowFreqBand is not None and len(lowFreqLoc) == 0:
+            print("Low freq band incorrect or no signal; retaining initial params.")
+            omega = freqs
+            ampEst = ampVec
+            allQ = sigmaFreqs
+            R = np.array([[sigmaObs]]) if not isinstance(sigmaObs, np.ndarray) else sigmaObs
+            lowFreqLoc = [np.argmin(np.abs(freqs - np.mean(lowFreqBand)))]
+'''
+        phi, Q, M = genParametersSoulatMdl_sspp(omega, Fs, ampEst, allQ)
+
+        T = len(y)
+        n_freq = len(freqs)
+
+        phase = np.zeros((T, n_freq))
+        #phaseBounds = np.zeros((T, n_freq, 2)) removed when removing uncertainty estimation 
+        #phaseWidth = np.zeros((T, n_freq))
+        allX = np.zeros((len(freqs) * 2, len(y)))
+        allP = np.zeros((len(freqs) * 2, len(freqs) * 2, len(y)))
+
+        x = stateVec[:, -1]
+        P = stateCov[:, :, -1]
+
+        for tp in range(windowSize, len(y)):
+            x_new, P_new = oneStepKFupdate_sspp(x, y[tp], phi, M, Q, R, P)
+            #print(f"DEBUG: x_new shape = {x_new.shape}, allX shape = {allX.shape}, M shape = {M.shape}")
+
+            allX[:, tp] = x_new
+            P_new = (P_new + P_new.T) / 2
+            allP[:, :, tp] = P_new
+
+            #replaced this
+            #real_idx = lowFreqLoc[0] * 2
+            #imag_idx = real_idx + 1
+            #phase[tp] = np.angle(x_new[real_idx] + 1j * x_new[imag_idx])
+
+            #with this, so we use multiple oscilators, and not just one 
+            n_freq = len(freqs)
+            real_idx = np.arange(0, 2 * n_freq, 2)
+            imag_idx = real_idx + 1
+            phase[tp, :] = np.angle(x_new[real_idx] + 1j * x_new[imag_idx])
 
 
-    freqs = np.array(initParams["freqs"])
-    Fs = initParams["Fs"]
-    ampVec = np.array(initParams["ampVec"])
-    sigmaFreqs = np.array(initParams["sigmaFreqs"])
-    sigmaObs = initParams["sigmaObs"]
-    windowSize = initParams["windowSize"]
-    lowFreqBand = np.array(initParams["lowFreqBand"])
+            # Sample credible intervals
+            #mean_vec = np.array([x_new[real_idx], x_new[imag_idx]])
+            #cov_mat = P_new[real_idx:imag_idx + 1, real_idx:imag_idx + 1]
+            #samples = np.random.multivariate_normal(mean_vec, cov_mat, 2000)
+            #sample_angles = np.angle(np.exp(1j * (np.angle(samples[:, 0] + 1j * samples[:, 1]) - phase[tp])))
 
-    assert len(freqs) == len(ampVec), 'amplitudes and frequencies must have the same size'
+            
 
-    if windowSize < Fs:
-        print("The window size needs to be different. Setting it equal to sampling rate.")
-        windowSize = Fs
+            for f in range(n_freq):
+                mu = np.array([
+                    x_new[real_idx[f]],
+                    x_new[imag_idx[f]]
+                ])
 
-    if len(y) < 2 * windowSize:
-        raise ValueError("Observation vector too short; must be at least 2x window size.")
+                Sigma = P_new[
+                    real_idx[f]:imag_idx[f] + 1,
+                    real_idx[f]:imag_idx[f] + 1
+                ]
 
-    numSegments = int(np.floor(len(y) / windowSize))
+                '''
+                Nsamp = 2000
+                sample_angles = np.zeros((n_freq, Nsamp))
+                samples = np.random.multivariate_normal(mu, Sigma, Nsamp)
 
-    def ang_var2dev(v):
-        return np.sqrt(-2 * np.log(v))
+                sample_phase = np.angle(samples[:, 0] + 1j * samples[:, 1])
 
-    data = y[:windowSize]
+                sample_angles[f, :] = np.angle(
+                    np.exp(1j * (sample_phase - phase[tp, f]))
+                )
+                '''
+            '''
+            #lowerBnd = np.percentile(sample_angles, 2.5)
+            #upperBnd = np.percentile(sample_angles, 97.5)
+            #phaseBounds[tp, :] = np.sort([lowerBnd + phase[tp], upperBnd + phase[tp]])
+            #phaseWidth[tp] = np.rad2deg(ang_var2dev(np.abs(np.mean(np.exp(1j * sample_angles)))))
+            for f in range(n_freq):
+                lower = np.percentile(sample_angles[f], 2.5)
+                upper = np.percentile(sample_angles[f], 97.5)
 
-    if not flagNoFit:
-        # Estimate oscillator parameters using EM
-        omega, ampEst, allQ, R, stateVec, stateCov = fit_MKModel_multSines(
-            data, freqs, Fs, ampVec, sigmaFreqs, sigmaObs
-        )
+                phaseBounds[tp, f, :] = np.sort([
+                    lower + phase[tp, f],
+                    upper + phase[tp, f]
+                ])
 
-        if lowFreqBand is not None:
-            lowFreqLoc = np.where((omega > lowFreqBand[0]) & (omega < lowFreqBand[1]))[0]
-            if len(lowFreqLoc) == 0:
-                lowFreqLoc = [np.argmin(np.abs(freqs - np.mean(lowFreqBand)))]
+                phaseWidth[tp, f] = np.rad2deg(
+                    ang_var2dev(np.abs(np.mean(np.exp(1j * sample_angles[f]))))
+                )
+            '''
+            P = P_new
+            x = x_new
 
-        returnParams = {
-            "freqs": omega,
-            "ampVec": ampEst,
-            "sigmaFreqs": allQ,
-            "sigmaObs": R,
-        }
-
-    else:
-        omega = freqs
-        ampEst = ampVec
-        allQ = sigmaFreqs
-        R = np.array([[sigmaObs]])
-    
-        returnParams = {}
-        lowFreqLoc = []
-        stateVec = np.zeros((len(freqs) * 2, 1))
-        stateCov = np.eye(len(freqs) * 2) * 0.001
-        stateCov = stateCov[:, :, np.newaxis]
-
-    if lowFreqBand is not None and len(lowFreqLoc) == 0:
-        print("Low freq band incorrect or no signal; retaining initial params.")
-        omega = freqs
-        ampEst = ampVec
-        allQ = sigmaFreqs
-        R = sigmaObs
-        lowFreqLoc = [np.argmin(np.abs(freqs - np.mean(lowFreqBand)))]
-
-    phi, Q, M = genParametersSoulatMdl_sspp(omega, Fs, ampEst, allQ)
-
-    T = len(y)
-    n_freq = len(freqs)
-
-    phase = np.zeros((T, n_freq))
-    #phaseBounds = np.zeros((T, n_freq, 2)) removed when removing uncertainty estimation 
-    #phaseWidth = np.zeros((T, n_freq))
-    allX = np.zeros((len(freqs) * 2, len(y)))
-    allP = np.zeros((len(freqs) * 2, len(freqs) * 2, len(y)))
-
-    x = stateVec[:, -1]
-    P = stateCov[:, :, -1]
-
-    for tp in range(windowSize, len(y)):
-        x_new, P_new = oneStepKFupdate_sspp(x, y[tp], phi, M, Q, R, P)
-        #print(f"DEBUG: x_new shape = {x_new.shape}, allX shape = {allX.shape}, M shape = {M.shape}")
-
-        allX[:, tp] = x_new
-        P_new = (P_new + P_new.T) / 2
-        allP[:, :, tp] = P_new
-
-        #replaced this
+        '''if lowFreqBand is not None and lowFreqLoc[0] == 0: 
+            print('lowFreqLoc = 0')
+        '''
+        # Replaced:
         #real_idx = lowFreqLoc[0] * 2
         #imag_idx = real_idx + 1
-        #phase[tp] = np.angle(x_new[real_idx] + 1j * x_new[imag_idx])
+        #allX_full = allX[real_idx:imag_idx + 1, :].T
 
-        #with this, so we use multiple oscilators, and not just one 
+        #to this, so we return all osccilators 
         n_freq = len(freqs)
-        real_idx = np.arange(0, 2 * n_freq, 2)
-        imag_idx = real_idx + 1
-        phase[tp, :] = np.angle(x_new[real_idx] + 1j * x_new[imag_idx])
-
-
-        # Sample credible intervals
-        #mean_vec = np.array([x_new[real_idx], x_new[imag_idx]])
-        #cov_mat = P_new[real_idx:imag_idx + 1, real_idx:imag_idx + 1]
-        #samples = np.random.multivariate_normal(mean_vec, cov_mat, 2000)
-        #sample_angles = np.angle(np.exp(1j * (np.angle(samples[:, 0] + 1j * samples[:, 1]) - phase[tp])))
-
-        
-
-        for f in range(n_freq):
-            mu = np.array([
-                x_new[real_idx[f]],
-                x_new[imag_idx[f]]
-            ])
-
-            Sigma = P_new[
-                real_idx[f]:imag_idx[f] + 1,
-                real_idx[f]:imag_idx[f] + 1
-            ]
-
-            '''
-            Nsamp = 2000
-            sample_angles = np.zeros((n_freq, Nsamp))
-            samples = np.random.multivariate_normal(mu, Sigma, Nsamp)
-
-            sample_phase = np.angle(samples[:, 0] + 1j * samples[:, 1])
-
-            sample_angles[f, :] = np.angle(
-                np.exp(1j * (sample_phase - phase[tp, f]))
-            )
-            '''
-        '''
-        #lowerBnd = np.percentile(sample_angles, 2.5)
-        #upperBnd = np.percentile(sample_angles, 97.5)
-        #phaseBounds[tp, :] = np.sort([lowerBnd + phase[tp], upperBnd + phase[tp]])
-        #phaseWidth[tp] = np.rad2deg(ang_var2dev(np.abs(np.mean(np.exp(1j * sample_angles)))))
-        for f in range(n_freq):
-            lower = np.percentile(sample_angles[f], 2.5)
-            upper = np.percentile(sample_angles[f], 97.5)
-
-            phaseBounds[tp, f, :] = np.sort([
-                lower + phase[tp, f],
-                upper + phase[tp, f]
-            ])
-
-            phaseWidth[tp, f] = np.rad2deg(
-                ang_var2dev(np.abs(np.mean(np.exp(1j * sample_angles[f]))))
-            )
-        '''
-        P = P_new
-        x = x_new
-
-    if lowFreqBand is not None and lowFreqLoc[0] == 0: 
-        print('lowFreqLoc = 0')
+        allX_full = allX.reshape(n_freq, 2, -1).transpose(2, 0, 1)
+        #return phase, phaseBounds, allX_full, phaseWidth, returnParams
+        return phase, allX_full, returnParams
+    except Exception as e:
+        # This will print the error and the channel info to your console
+        print(f"--- ERROR IN CHANNEL ---")
+        print(f"Error: {e}")
+        import traceback
+        traceback.print_exc()
+        # Return Nones so the Parallel collector doesn't crash entirely
+        return None, None, None
     
-    # Replaced:
-    #real_idx = lowFreqLoc[0] * 2
-    #imag_idx = real_idx + 1
-    #allX_full = allX[real_idx:imag_idx + 1, :].T
-
-    #to this, so we return all osccilators 
-    n_freq = len(freqs)
-    allX_full = allX.reshape(n_freq, 2, -1).transpose(2, 0, 1)
-    #return phase, phaseBounds, allX_full, phaseWidth, returnParams
-    return phase, allX_full, returnParams
+    
 
 
 
@@ -284,9 +296,9 @@ def fit_MKModel_multSines(data, freqs, Fs, ampVec, sigmaFreqs, sigmaObs):
     Fit the Soulat multi-sine oscillator model using EM (Shumway & Stoffer style).
     Returns: omega, ampEst, allQ, R, stateVec, stateCov
     """
-    raise RuntimeError(
-        "EM + smoothing disabled. Using fixed parameters (Option B)."
-    )
+    #raise RuntimeError(
+     #   "EM + smoothing disabled. Using fixed parameters (Option B)."
+    #)
     y = np.asarray(data).ravel()
 
     if sigmaFreqs is None or len(sigmaFreqs) == 0:

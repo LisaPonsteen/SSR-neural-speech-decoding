@@ -42,7 +42,7 @@ def createAudio(spectrogram, audiosr=16000, winLength=0.05, frameshift=0.01):
     scaled = np.int16(rec_audio/np.max(np.abs(rec_audio)) * 32767)
     return scaled
 
-def reconstruct(pts, SSPEfeatures=True):
+def reconstruct(pts, SSPEfeatures=True, hg_osc_sspe_features=False, data=None):
 
     feat_path = r'./features'
     result_path = r'./results'
@@ -56,7 +56,8 @@ def reconstruct(pts, SSPEfeatures=True):
 
     nfolds = 10
     kf = KFold(nfolds,shuffle=False)
-    est = LinearRegression(n_jobs=5)
+    #est = LinearRegression(n_jobs=-1)
+    est = LinearRegression(n_jobs=1)
     pca = PCA()
     numComps = 50
     
@@ -71,7 +72,10 @@ def reconstruct(pts, SSPEfeatures=True):
         if SSPEfeatures:
             data = np.load(os.path.join(feat_path,f'{pt}_SSPEfeat.npy'))
         else:
-            data = np.load(os.path.join(feat_path,f'{pt}_feat.npy'))
+            if hg_osc_sspe_features:
+                data = data
+            else:
+                data = np.load(os.path.join(feat_path,f'{pt}_feat.npy'))
         
 
         spectrogram = np.load(os.path.join(feat_path,f'{pt}_spec.npy'))
@@ -149,9 +153,10 @@ def reconstruct(pts, SSPEfeatures=True):
         np.save(os.path.join(result_path,'SSPErandomResults.npy'),randomControl)
         np.save(os.path.join(result_path,'SSPEexplainedVariance.npy'),explainedVariance)
     else:
-        np.save(os.path.join(result_path,'HGlinearResults.npy'),allRes)
-        np.save(os.path.join(result_path,'HGrandomResults.npy'),randomControl)
-        np.save(os.path.join(result_path,'HGexplainedVariance.npy'),explainedVariance)
+        if not hg_osc_sspe_features:
+            np.save(os.path.join(result_path,'HGlinearResults.npy'),allRes)
+            np.save(os.path.join(result_path,'HGrandomResults.npy'),randomControl)
+            np.save(os.path.join(result_path,'HGexplainedVariance.npy'),explainedVariance)
 
 if __name__=="__main__":
     reconstruct(None)
