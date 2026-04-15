@@ -35,14 +35,16 @@ def createAudio(spectrogram, audiosr=16000, winLength=0.05, frameshift=0.01):
     hop = int(spectrogram.shape[0]/nfolds)
     rec_audio = np.array([])
     for_reconstruction = mfb.fromLogMels(spectrogram)
+    
     for w in range(0,spectrogram.shape[0],hop):
         spec = for_reconstruction[w:min(w+hop,for_reconstruction.shape[0]),:]
+        
         rec = rW.reconstructWavFromSpectrogram(spec,spec.shape[0]*spec.shape[1],fftsize=int(audiosr*winLength),overlap=int(winLength/frameshift))
         rec_audio = np.append(rec_audio,rec)
     scaled = np.int16(rec_audio/np.max(np.abs(rec_audio)) * 32767)
     return scaled
 
-def reconstruct(pts, SSPEfeatures=True, hg_osc_sspe_features=False, data=None):
+def reconstruct(pts, SSPEfeatures=True, hg_osc_sspe_features=False, data_dict=None, saveAs=None):
 
     feat_path = r'./features'
     result_path = r'./results'
@@ -73,15 +75,42 @@ def reconstruct(pts, SSPEfeatures=True, hg_osc_sspe_features=False, data=None):
             data = np.load(os.path.join(feat_path,f'{pt}_SSPEfeat.npy'))
         else:
             if hg_osc_sspe_features:
-                data = data
+                data = data_dict[pt]
             else:
                 data = np.load(os.path.join(feat_path,f'{pt}_feat.npy'))
+        
+
+        #Check for NaNs or Infinities
+        nan_count = np.isnan(data).sum()
+        inf_count = np.isinf(data).sum()
+        
+        if nan_count > 0 or inf_count > 0:
+            print(f"!!! Warning: {pt} has {nan_count} NaNs and {inf_count} Infs in features.")
+            
+            # Fix: Replace NaNs with 0 and Infs with a very large/small number or 0
+            data = np.nan_to_num(data, nan=0.0, posinf=0.0, neginf=0.0)
+            
+            # Optional: Drop columns that are entirely NaN (all-zero oscillators)
+            # This helps PCA and prevents LinearRegression from getting "confused"
+            variance = np.var(data, axis=0)
+            valid_cols = variance > 0
+            if not np.all(valid_cols):
+                print(f"Removing {np.sum(~valid_cols)} constant/zero columns from {pt}")
+                data = data[:, valid_cols]
         
 
         spectrogram = np.load(os.path.join(feat_path,f'{pt}_spec.npy'))
         labels = np.load(os.path.join(feat_path,f'{pt}_procWords.npy'))
         featName = np.load(os.path.join(feat_path,f'{pt}_feat_names.npy'))
         
+        #Check lengths, trim both to the same length
+        '''
+        print(data.shape[0], spectrogram.shape[0])
+        min_len = min(data.shape[0], spectrogram.shape[0])
+        data = data[:min_len, :]
+        spectrogram = spectrogram[:min_len, :]
+        '''
+
         #Initialize an empty spectrogram to save the reconstruction to
         rec_spec = np.zeros(spectrogram.shape)
         #Save the correlation coefficients for each fold
@@ -90,6 +119,7 @@ def reconstruct(pts, SSPEfeatures=True, hg_osc_sspe_features=False, data=None):
             #Z-Normalize with mean and std from the training data
             mu=np.mean(data[train,:],axis=0)
             std=np.std(data[train,:],axis=0)
+            std[std == 0] = 1.0  # Prevent division by zero
 
             trainData=(data[train,:]-mu)/std
             testData=(data[test,:]-mu)/std
@@ -140,23 +170,32 @@ def reconstruct(pts, SSPEfeatures=True, hg_osc_sspe_features=False, data=None):
         np.save(os.path.join(result_path,f'{pt}_predicted_spec.npy'), rec_spec)
         
         #Synthesize waveform from spectrogram using Griffin-Lim
+        print(f"Max value in rec_spec: {np.max(rec_spec)}")
+        if np.max(rec_spec) > 100: # Threshold depends on your scaling
+            print("Warning: Predicted spectrogram values are too high!")
+            rec_spec = np.clip(rec_spec, -100, 50) # Forces values into a mathematically safe range
         reconstructedWav = createAudio(rec_spec,audiosr=audiosr,winLength=winLength,frameshift=frameshift)
-        wavfile.write(os.path.join(result_path,f'{pt}_predicted.wav'),int(audiosr),reconstructedWav)
+        wavfile.write(os.path.join(result_path,f'{pt}HG_predicted.wav'),int(audiosr),reconstructedWav)
 
         #For comparison synthesize the original spectrogram with Griffin-Lim
         origWav = createAudio(spectrogram,audiosr=audiosr,winLength=winLength,frameshift=frameshift)
         wavfile.write(os.path.join(result_path,f'{pt}_orig_synthesized.wav'),int(audiosr),origWav)
 
-    #Save results in numpy arrays   
-    if SSPEfeatures:
-        np.save(os.path.join(result_path,'SSPElinearResults.npy'),allRes)
-        np.save(os.path.join(result_path,'SSPErandomResults.npy'),randomControl)
-        np.save(os.path.join(result_path,'SSPEexplainedVariance.npy'),explainedVariance)
+    #Save results in numpy arrays  
+    if saveAs:
+        np.save(os.path.join(result_path, saveAs + 'linearResults.npy'),allRes)
+        np.save(os.path.join(result_path, saveAs + 'randomResults.npy'),randomControl)
+        np.save(os.path.join(result_path, saveAs + 'explainedVariance.npy'),explainedVariance)
     else:
-        if not hg_osc_sspe_features:
-            np.save(os.path.join(result_path,'HGlinearResults.npy'),allRes)
-            np.save(os.path.join(result_path,'HGrandomResults.npy'),randomControl)
-            np.save(os.path.join(result_path,'HGexplainedVariance.npy'),explainedVariance)
+        if SSPEfeatures:
+            np.save(os.path.join(result_path,'SSPElinearResults.npy'),allRes)
+            np.save(os.path.join(result_path,'SSPErandomResults.npy'),randomControl)
+            np.save(os.path.join(result_path,'SSPEexplainedVariance.npy'),explainedVariance)
+        else:
+            if not hg_osc_sspe_features:
+                np.save(os.path.join(result_path,'HGlinearResults.npy'),allRes)
+                np.save(os.path.join(result_path,'HGrandomResults.npy'),randomControl)
+                np.save(os.path.join(result_path,'HGexplainedVariance.npy'),explainedVariance)
 
 if __name__=="__main__":
     reconstruct(None)

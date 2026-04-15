@@ -8,12 +8,16 @@ import scipy.io.wavfile as wavfile
 
 
 if __name__=="__main__":
-    
+
     result_path = r'./results'
     #Load correlation results
-    allRes = np.load(os.path.join(result_path,'HGlinearResults.npy'))
-    randomControl = np.load(os.path.join(result_path,'HGrandomResults.npy'))
-    explainedVariance = np.load(os.path.join(result_path,'HGexplainedVariance.npy'))
+    prefix = 'all_oscs' #'HG' #
+    #prefix = '30_170_oscs'
+
+    allRes = np.load(os.path.join(result_path, f'{prefix}linearResults.npy'))
+    randomControl = np.load(os.path.join(result_path, f'{prefix}randomResults.npy'))
+    explainedVariance = np.load(os.path.join(result_path,f'{prefix}explainedVariance.npy'))
+
 
     for p in range(0,10):
         print("Sub-",p+1)
@@ -27,7 +31,7 @@ if __name__=="__main__":
         print(round(explainedVariance[p].mean(),2))
         print(round(z,2))
         
-    allRes = np.load(os.path.join(result_path,'HGlinearResults.npy'))
+    allRes = np.load(os.path.join(result_path,f'{prefix}linearResults.npy'))
 
     colors = ['C' + str(i) for i in range(10)]
 
@@ -90,9 +94,10 @@ if __name__=="__main__":
     ax[1].spines['right'].set_visible(False)
     ax[1].spines['top'].set_visible(False)
     plt.tight_layout()
-    plt.savefig(os.path.join(result_path,'results.png'),dpi=600)
+    plt.savefig(os.path.join(result_path,f'{prefix}results.png'),dpi=600)
     plt.show()
 
+    '''
     # Viz example spectrogram
     #Load words and spectrograms
     feat_path = r'./features'
@@ -189,4 +194,4 @@ if __name__=="__main__":
     plt.show()
 
 
-
+'''
