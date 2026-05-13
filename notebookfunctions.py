@@ -40,6 +40,7 @@ stepSize = 5
 sr=1024
 path_bids = '/Users/lisa/Documents/DSAI_year2/Marble/SingleWordProductionDutch/SingleWordProductionDutch-iBIDS'
 path_somata = '/Users/lisa/Documents/DSAI_year2/SingleWordProductionDutch-1/somata'
+path_result = '/Users/lisa/Documents/DSAI_year2/SingleWordProductionDutch-1/results'
 
 def get_eeg(participant, t_start=0, t_segment = 10):
     #Load data
@@ -81,10 +82,13 @@ def get_initParams(participant):
     # Find indices where template frequencies are in the HG range
     hg_mask = (template_freqs >= 70) & (template_freqs <= 170)
     
+    
     hg_only_f = template_freqs[hg_mask]
     hg_only_a = template_a[hg_mask]
     hg_only_s = template_s[hg_mask]
     
+    #print (hg_only_f)
+
     initParams_list = []
     for ch, _ in somata_results.items():
         initParams = {
@@ -96,7 +100,8 @@ def get_initParams(participant):
             "windowSize": 2000,
             "lowFreqBand": None
         }
-        if not any(70 <= f <= 170 for f in data['freqs']):
+        if not any(70 <= f <= 170 for f in somata_results[ch]['freqs']):
+            #print ("not in somata hg")
             initParams = {
                 "freqs": list(somata_results[ch]['freqs']) + list(hg_only_f),
                 "Fs": sr,
@@ -216,3 +221,104 @@ def get_template_parameters(results_dict, template_freqs, window=7):
             final_s.append(0.5)
             
     return final_a, final_s
+
+
+def viz_compare_results(prefix_a, prefix_b, name_a = None, name_b = None, title=None ):
+
+    #Load correlation results
+
+    allRes_a = np.load(os.path.join(path_result, f'{prefix_a}linearResults.npy'))
+    randomControl_a = np.load(os.path.join(path_result, f'{prefix_a}randomResults.npy'))
+    explainedVariance_a = np.load(os.path.join(path_result,f'{prefix_a}explainedVariance.npy'))
+
+    allRes_b = np.load(os.path.join(path_result, f'{prefix_b}linearResults.npy'))
+    randomControl_b = np.load(os.path.join(path_result, f'{prefix_b}randomResults.npy'))
+    explainedVariance_b = np.load(os.path.join(path_result,f'{prefix_b}explainedVariance.npy'))
+
+
+    print(allRes_a.shape)
+    print(allRes_b.shape)
+    
+    mean_a = np.mean(allRes_a, axis=(1, 2))
+    std_a = np.std(allRes_a, axis=(1, 2))
+    
+    mean_b = np.mean(allRes_b, axis=(1, 2))
+    std_b = np.std(allRes_b, axis=(1, 2))
+
+    colors = ['C' + str(i) for i in range(10)]
+    x = np.arange(len(mean_a))
+
+    width = 0.35  # Width of the individual bars
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+
+    # Plot Method A bars (left side of the tick)
+    rects1 = ax.bar(x - width/2, mean_a, width, yerr=std_a, 
+                    label=name_a if name_a else prefix_a, alpha=0.5, color='C' + str(0)) #'steelblue')
+    
+    # Plot Method B bars (right side of the tick)
+    rects2 = ax.bar(x + width/2, mean_b, width, yerr=std_b, 
+                    label=name_b if name_b else prefix_b, alpha=0.5, color='C' + str(1)) #'indianred')
+
+    # Add scatter points for individual observations
+    for p in range(0,10):
+        # Scatter for Method A
+        vals_a = np.mean(allRes_a[p], axis=1)
+        ax.scatter(np.repeat(p - width/2, len(vals_a)), vals_a, color='C' + str(0))
+                   #color='black', s=15, alpha=0.5, zorder=3)
+        
+        # Scatter for Method B
+        vals_b = np.mean(allRes_b[p], axis=1)
+        ax.scatter(np.repeat(p + width/2, len(vals_b)), vals_b,  color='C' + str(1))
+                   #color='black', s=15, alpha=0.5, zorder=3)
+
+    # Styling
+    ax.set_ylabel('Correlation', fontsize=18)
+    ax.set_title(title if title else f'Performance Comparison between {prefix_a} and {prefix_b} features', fontsize=18)#, fontweight="bold")
+    ax.set_xticks(x)
+    ax.set_xticklabels([f'sub-{i+1:02d}' for i in x], rotation=45, ha='right', fontsize=14)
+    ax.set_ylim(0, 1)
+    
+    # Clean up spines
+    ax.spines['right'].set_visible(False)
+    ax.spines['top'].set_visible(False)
+    ax.tick_params(axis='both', which='major', labelsize=14, width=2)
+    
+    # Add a legend to distinguish methods
+    ax.legend(fontsize=14)
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(result_path,f'comparison_results.png'),dpi=600)
+    plt.show()
+    
+    '''
+    #Barplot of average results
+    plt.bar(x,meanCorrs,yerr=stdCorrs,alpha=0.5,color=colors)
+    for p in range(allRes.shape[0]):
+        #Add mean results of each patient as scatter points
+        plt.scatter(np.zeros(allRes[p,:,:].shape[0])+p,np.mean(allRes[p,:,:],axis=1),color=colors[p])
+
+    plt.set_xticks(x)
+    plt.set_xticklabels(['sub-' + "{:02d}".format(i+1) for i in x],rotation=45, ha='right',fontsize=20)
+    plt.set_ylim(0,1)
+    plt.set_ylabel('Correlation')
+    #Title
+    plt.set_title('Performance Comparison between bandpass and SSPE features',fontsize=20,fontweight="bold")
+    # Make pretty
+    plt.setp(plt.spines.values(), linewidth=2)
+    #The ticks
+    plt.xaxis.set_tick_params(width=2)
+    plt.yaxis.set_tick_params(width=2)
+    plt.xaxis.label.set_fontsize(20)
+    plt.yaxis.label.set_fontsize(20)
+    c = [a.set_fontsize(20) for a in plt.get_yticklabels()]
+
+    #Despine
+    plt.spines['right'].set_visible(False)
+    plt.spines['top'].set_visible(False)
+
+
+    plt.tight_layout()
+    #plt.savefig(os.path.join(result_path,f'{prefix}results.png'),dpi=600)
+    plt.show()
+    '''

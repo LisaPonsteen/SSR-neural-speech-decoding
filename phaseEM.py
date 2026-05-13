@@ -125,19 +125,15 @@ def causalPhaseEM_MKmdl_noSeg(y, initParams, flagNoFit):
             P_new = (P_new + P_new.T) / 2
             allP[:, :, tp] = P_new
 
-            #replaced this
-            #real_idx = lowFreqLoc[0] * 2
-            #imag_idx = real_idx + 1
-            #phase[tp] = np.angle(x_new[real_idx] + 1j * x_new[imag_idx])
 
-            #with this, so we use multiple oscilators, and not just one 
+            #use multiple oscilators, and not just one 
             n_freq = len(freqs)
             real_idx = np.arange(0, 2 * n_freq, 2)
             imag_idx = real_idx + 1
             phase[tp, :] = np.angle(x_new[real_idx] + 1j * x_new[imag_idx])
 
 
-            # Sample credible intervals
+            # skip Sampling credible intervals
             #mean_vec = np.array([x_new[real_idx], x_new[imag_idx]])
             #cov_mat = P_new[real_idx:imag_idx + 1, real_idx:imag_idx + 1]
             #samples = np.random.multivariate_normal(mean_vec, cov_mat, 2000)

@@ -18,7 +18,7 @@ from joblib import Parallel, delayed
 #Small helper function to speed up the hilbert transform by extending the length of data to the next power of 2
 hilbert3 = lambda x: scipy.signal.hilbert(x, scipy.fftpack.next_fast_len(len(x)),axis=0)[:len(x)]
 
-def extractSSPE(data, initParams_list, use_channels=None, sr=1024, windowLength=0.05, frameshift=0.01):
+def extractSSPE(data, initParams_list, include_phase = True, include_pac = True, use_channels=None, sr=1024, windowLength=0.05, frameshift=0.01):
     """
     alternative to extract HG, has the same output shapes.
 
@@ -59,7 +59,7 @@ def extractSSPE(data, initParams_list, use_channels=None, sr=1024, windowLength=
 
     # n_jobs=-1 uses all available CPU cores.
     print(f"Starting parallel SSPE extraction for {n_channels} channels...")
-    results = Parallel(n_jobs=-1)(
+    results = Parallel(n_jobs=4)(
         delayed(phaseEM.causalPhaseEM_MKmdl_noSeg)(
             data[:, ch], 
             initParams_list[ch], 
@@ -71,11 +71,26 @@ def extractSSPE(data, initParams_list, use_channels=None, sr=1024, windowLength=
     # determine the total number of oscillators across all channels to avoid padding
     total_oscillators = sum(allX_full.shape[1] for _, allX_full, _ in results)
     
+    # Define the threshold for "low frequency" oscillators
+    PAC_FREQ_THRESHOLD = 20.0
+
+    if include_phase or include_pac:
+        total_low_freq_oscillators = sum(
+            sum(1 for f in params["freqs"] if f < PAC_FREQ_THRESHOLD) 
+            for params in initParams_list
+        )
+        if include_phase:
+            total_oscillators +=2*total_low_freq_oscillators
+        if include_pac:
+            total_oscillators +=total_low_freq_oscillators
+
+
     # pre-allocate the feature matrix with the EXACT size needed
     feat = np.zeros((numWindows, total_oscillators))
     
     # iterate through channels and fill columns sequentially
     current_col = 0
+
 
     for ch_idx, (phase, allX_full, returnParams) in enumerate(results):
         # allX_full shape is (time, freq, state_dim) where state_dim is usually 2 (sine/cosine)
@@ -83,8 +98,22 @@ def extractSSPE(data, initParams_list, use_channels=None, sr=1024, windowLength=
             allX_full[:, :, 0]**2 +
             allX_full[:, :, 1]**2
         )
+        phase_ch = np.angle(allX_full[:, :, 0] + 1j * allX_full[:, :, 1])
+
+
         # Only fill the frequencies that this channel actually has
         n_freq_ch = amp_ch.shape[1]
+        ch_freqs = initParams_list[ch_idx]['freqs']
+        assert len(ch_freqs) == n_freq_ch, "smth wrong with nr of oscillators and their frequencies"
+        high_osc_idx = None
+        if include_pac:
+            #get next high_osc_idx from initparams_list (which is the one most prominant in the signal since first found by somata, or else added from the template since init params is by that order)
+            for idx, freq in enumerate(ch_freqs):
+                if 70 < freq < 170:
+                    high_osc_idx = idx
+                    break
+            assert high_osc_idx is not None, f"Channel {ch_idx} appears to have no HG oscillator"
+        
         # Process each oscillator for this specific channel
         for osc_idx in range(n_freq_ch):
             osc_data = amp_ch[:, osc_idx]
@@ -96,9 +125,39 @@ def extractSSPE(data, initParams_list, use_channels=None, sr=1024, windowLength=
                 
                 # Take the mean of the amplitude within the window
                 feat[win, current_col] = np.mean(osc_data[start:stop])
-            
+
+                #get this osc's freq from initparams_list:
+
+                if ch_freqs[osc_idx] < PAC_FREQ_THRESHOLD:
+                    p_low = phase_ch[start:stop, osc_idx]
+
+                    if include_phase:
+                        #pure phase feature:
+                        complex_mean = np.mean(np.exp(1j * p_low))
+                        feat_sin = np.imag(complex_mean) # give both sin and cos feats since decoder cannot process imaginary numbers
+                        feat_cos = np.real(complex_mean)
+                        feat[win, current_col+1] = feat_sin
+                        feat[win, current_col+2] = feat_cos
+
+                    if include_pac:
+                        
+                        a_high = amp_ch[start:stop, high_osc_idx]
+
+                        #pac feature: use Mean Vector Length, abs mean of amp hg freq * angle low freq
+                        pac_feature = np.abs(np.mean(a_high * np.exp(1j * p_low)))
+                        if include_phase:
+                            feat[win, current_col+3] = pac_feature
+                        else:
+                            feat[win, current_col+1] = pac_feature
+
+
             # Move to the next column in the global feature matrix
             current_col += 1
+            if ch_freqs[osc_idx] < PAC_FREQ_THRESHOLD:
+                if include_phase:
+                    current_col += 2
+                if include_pac:
+                    current_col += 1
         #amp[:len(amp_ch), ch_idx, :n_freq_ch] = amp_ch
     
     return feat
@@ -107,9 +166,6 @@ def extractSSPE(data, initParams_list, use_channels=None, sr=1024, windowLength=
 
 def extractSSPE_sequential(data, initParams, use_channels=None, sr=1024, windowLength=0.05, frameshift=0.01):
     """
-    alternative to extract HG, has the same output shapes.
-
-
     Parameters
     ----------
     data: array (samples, channels)
@@ -198,6 +254,8 @@ def extractHG(data, sr, windowLength=0.05, frameshift=0.01):
     #Filter High-Gamma Band
     sos = scipy.signal.iirfilter(4, [70/(sr/2),170/(sr/2)],btype='bandpass',output='sos')
     data = scipy.signal.sosfiltfilt(sos,data,axis=0)
+    
+
     #Attenuate first harmonic of line noise
     sos = scipy.signal.iirfilter(4, [98/(sr/2),102/(sr/2)],btype='bandstop',output='sos')
     data = scipy.signal.sosfiltfilt(sos,data,axis=0)
@@ -400,7 +458,7 @@ def run_extract_features(pt, initParams_list, SSPE=True):
     if SSPE:
         np.save(os.path.join(path_output,f'{pt}_SSPEfeat.npy'), feat)
     else:
-        np.save(os.path.join(path_output,f'{pt}_feat.npy'), feat)
+        np.save(os.path.join(path_output,f'{pt}_causalfeat.npy'), feat)
     np.save(os.path.join(path_output,f'{pt}_procWords.npy'), words)
     np.save(os.path.join(path_output,f'{pt}_spec.npy'), melSpec)
     np.save(os.path.join(path_output,f'{pt}_feat_names.npy'), feature_names)
