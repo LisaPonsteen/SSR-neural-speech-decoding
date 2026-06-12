@@ -219,6 +219,10 @@ def reconstruct(pts, model = 'PLS', n_comp = 9, feat_suffix='_feat.npy', unstack
     kf = KFold(nfolds,shuffle=False)
 
 
+    #seconds_to_drop = 2.0 #to allow sspe model to 'warm-up'
+    seconds_to_drop = 10.0 #to not include the data that we initialized the parameters with
+    frames_to_drop = int(seconds_to_drop / frameshift)
+
 
     #pca = PCA()
 
@@ -246,6 +250,10 @@ def reconstruct(pts, model = 'PLS', n_comp = 9, feat_suffix='_feat.npy', unstack
         #Load the data
         if feat_suffix:
             data = np.load(os.path.join(feat_path,f'{pt}{feat_suffix}'))
+            
+            # Slice data along the time dimension (axis 0)
+            data = data[frames_to_drop:, :] #this works now because i know we have unstacked data, else, change
+
             if unstacked:
                 data = stackFeatures(data)
         else:
@@ -272,6 +280,7 @@ def reconstruct(pts, model = 'PLS', n_comp = 9, feat_suffix='_feat.npy', unstack
         
 
         spectrogram = np.load(os.path.join(feat_path,f'{pt}_spec.npy'))
+        spectrogram = spectrogram[frames_to_drop:, :]
         #labels = np.load(os.path.join(feat_path,f'{pt}_procWords.npy'))
         #featName = np.load(os.path.join(feat_path,f'{pt}_feat_names.npy'))
         
@@ -352,7 +361,8 @@ def reconstruct(pts, model = 'PLS', n_comp = 9, feat_suffix='_feat.npy', unstack
 
         #Save reconstructed spectrogram
         os.makedirs(os.path.join(result_path), exist_ok=True)
-        np.save(os.path.join(result_path,f'{pt}_predicted_spec.npy'), rec_spec)
+        np.save(os.path.join(result_path,f'{pt}_PAC_predicted_spec.npy'), rec_spec)
+        print("save pac")
         
         if synthesize:
             #Synthesize waveform from spectrogram using Griffin-Lim

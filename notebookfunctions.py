@@ -118,29 +118,29 @@ def get_initParams(participant):
 
 #average frequency template constructor by finding clusters in somata results
 def plot_density_template(results_dict, template_freqs, s, dens, all_freqs):
-    plt.figure(figsize=(12, 6))
+    plt.figure(figsize=(12, 5))
     
     # plot the smooth KDE density curve
     plt.plot(s, dens, color='black', lw=2, label='Kernel Density (KDE)')
     plt.fill_between(s.flatten(), dens, alpha=0.2, color='gray')
     
     # plot the individual frequencies found by SOMATA (the blue vertical lines)
-    plt.vlines(all_freqs, ymin=0, ymax=dens.max()*0.05, color='blue', alpha=0.3, label='SOMATA Freqs')
+    plt.vlines(all_freqs, ymin=0, ymax=dens.max()*0.05, color='C' + str(0) , alpha=0.3, label='SOMATA Freqencies')
     
     # mark the final chosen template frequencies
     for f in template_freqs:
         # Get density value at this frequency to place the marker
         idx = np.argmin(np.abs(s - f))
         plt.plot(f, dens[idx], "ro", markersize=8)
-        plt.annotate(f"{f:.1f}Hz", (f, dens[idx]), textcoords="offset points", 
-                     xytext=(0,10), ha='center', fontweight='bold', color='red')
+        plt.annotate(f"{f:.0f}Hz", (f, dens[idx]), textcoords="offset points", 
+                     xytext=(0,10), ha='center', fontweight='bold',fontsize = 13, color='C3')
     
-    plt.title('Frequency Cluster Analysis & Template Selection', fontsize=14)
-    plt.xlabel('Frequency (Hz)', fontsize=12)
-    plt.ylabel('Density (Probability)', fontsize=12)
-    plt.xlim(0, 170)
+    #plt.title('Frequency Cluster Analysis & Template Selection', fontsize=14)
+    #plt.xlabel('Frequency (Hz)', fontsize=12)
+    #plt.ylabel('Density', fontsize=12)
+    plt.xlim(70, 170)
     plt.grid(alpha=0.3)
-    plt.legend()
+    plt.legend(fontsize = 16)
     plt.show()
 
 
@@ -150,7 +150,7 @@ def build_density_template(results_dict, nr_osc = 3, min_hg_osc=2, verbose = Fal
         if any(70 <= f <= 170 for f in data['freqs']):
             all_freqs.extend(data['freqs'])
 
-    print(f'nr of frequencies in somata results in total: {len(all_freqs)}')
+    #print(f'nr of frequencies in somata results in total: {len(all_freqs)}')
     #print(f'all frequencies found: {sorted(all_freqs)}')
     # Reshape for sklearn
     X = np.array(all_freqs).reshape(-1, 1)

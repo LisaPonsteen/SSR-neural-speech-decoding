@@ -143,7 +143,7 @@ def extractSSPE(data, initParams_list, include_phase = True, include_pac = True,
                         
                         a_high = amp_ch[start:stop, high_osc_idx]
 
-                        #pac feature: use Mean Vector Length, abs mean of amp hg freq * angle low freq
+                        #pac feature: use mean vector length, abs mean of amp hg freq * angle low freq
                         pac_feature = np.abs(np.mean(a_high * np.exp(1j * p_low)))
                         if include_phase:
                             feat[win, current_col+3] = pac_feature
