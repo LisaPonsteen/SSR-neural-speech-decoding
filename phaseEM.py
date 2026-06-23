@@ -205,9 +205,6 @@ def causalPhaseEM_MKmdl_noSeg(y, initParams, flagNoFit):
         traceback.print_exc()
         # Return Nones so the Parallel collector doesn't crash entirely
         return None, None, None
-    
-    
-
 
 
 def genParametersSoulatMdl_sspp(freqs, Fs, ampVector, sigmaFreqs):

@@ -5,57 +5,72 @@ import numpy as np
 import numpy.matlib as matlib
 import scipy
 import scipy.signal
-import scipy.stats
 import scipy.io.wavfile
 import scipy.fftpack
 
 from pynwb import NWBHDF5IO
 import MelFilterBank as mel
 import phaseEM
-import config as cfg
+import notebookfunctions
 from joblib import Parallel, delayed
+
+winL = 0.05 #windowlength 
+frameshift = 0.01
+modelOrder = 4
+stepSize = 5
+path_bids = '/Users/lisa/Documents/DSAI_year2/Marble/SingleWordProductionDutch/SingleWordProductionDutch-iBIDS'
+path_output = r'./features'
+sr=1024
 
 #Small helper function to speed up the hilbert transform by extending the length of data to the next power of 2
 hilbert3 = lambda x: scipy.signal.hilbert(x, scipy.fftpack.next_fast_len(len(x)),axis=0)[:len(x)]
 
-def extractSSPE(data, initParams_list, include_phase = True, include_pac = True, use_channels=None, sr=1024, windowLength=0.05, frameshift=0.01):
+
+def extractSSPE(data, initParams_list, include_phase = True, include_pac = True):
     """
-    alternative to extract HG, has the same output shapes.
+    Extract State-Space Phase Estimation (SSPE) features from EEG data.
+    
+    This is an alternative to extractHG with the same output shapes. It tracks multiple oscillators per channel and extract
+    amplitude, phase, and phase-amplitude coupling (PAC) features.
 
     Parameters
     ----------
-    data: array (samples, channels)
-        EEG time series
-    initParams_list: list of dictionaries
-        List of dictionaries containing the initialization parameters for the phaseEM algorithm
-    use_channels: list of int
-        List of channels to use. if none, it uses all
-    sr: int
-        Sampling rate of the data
-    windowLength: float
-        Length of window (in seconds) in which spectrogram will be calculated
-    frameshift: float
-        Shift (in seconds) after which next window will be extracted
+    data : array (samples, channels)
+        EEG time series data
+    initParams_list : list of dict
+        List of dictionaries containing initialization parameters for the phaseEM
+        algorithm for each channel. Each dict should contain: freqs, Fs, ampVec,
+        sigmaFreqs, sigmaObs, windowSize, lowFreqBand
+    include_phase : bool, optional
+        Whether to include phase features for low-frequency oscillators (<20 Hz).
+        Phase features are represented as sine and cosine components. Default is True.
+    include_pac : bool, optional
+        Whether to include phase-amplitude coupling features between low-frequency
+        oscillators and high-gamma oscillators. Default is True.
+        
     Returns
-    ----------
-    feat: array (windows, channels)
-        Frequency-band feature matrix
+    -------
+    feat : array (windows, oscillators)
+        Feature matrix where each column represents an oscillator feature.
+        Features include: amplitude for all oscillators, sine/cosine phase for
+        low-frequency oscillators (if include_phase=True), and PAC features for
+        low-frequency oscillators (if include_pac=True).
     """
     #Linear detrend
     data = scipy.signal.detrend(data,axis=0)
     #Number of windows
-    numWindows = int(np.floor((data.shape[0]-windowLength*sr)/(frameshift*sr)))
+    numWindows = int(np.floor((data.shape[0]-winL*sr)/(frameshift*sr)))
     
     #remove (harmonics of) line noise
-    for i in range (0,5):
+    for i in range (0,4):
         sos = scipy.signal.iirfilter(4, [(i*100+49)/(sr/2),(i*100+51)/(sr/2)],btype='bandstop',output='sos')
         data = scipy.signal.sosfiltfilt(sos,data,axis=0)
 
+    #note: I saw that with extractHG(), line noise is removed around 100 and 150 hz
+    #we should probably filter [(i*50+49)/(sr/2),(i*50+51)/(sr/2)] to also get rid of the small peak in psd sometimes occuring at 100 hz
+
     #for data.shape == (samples, channels):
-    if use_channels != None:
-        n_channels = len(use_channels)
-    else:
-        n_channels = data.shape[1]
+    n_channels = data.shape[1]
 
     # n_jobs=-1 uses all available CPU cores.
     print(f"Starting parallel SSPE extraction for {n_channels} channels...")
@@ -66,48 +81,45 @@ def extractSSPE(data, initParams_list, include_phase = True, include_pac = True,
             flagNoFit=True
         ) for ch in range(n_channels)
     )
-    # results is now a list of tuples: [(phase, allX_full, returnParams), ...]
+    #results is a list of tuples: [(phase, allX_full, returnParams), ...]
     
-    # determine the total number of oscillators across all channels to avoid padding
+    # the threshold to devine low frequency oscillators
+    LOW_FREQ_THRESHOLD = 20.0
+
+    #determine how big the future space must be
     total_oscillators = sum(allX_full.shape[1] for _, allX_full, _ in results)
-    
-    # Define the threshold for "low frequency" oscillators
-    PAC_FREQ_THRESHOLD = 20.0
 
     if include_phase or include_pac:
         total_low_freq_oscillators = sum(
-            sum(1 for f in params["freqs"] if f < PAC_FREQ_THRESHOLD) 
+            sum(1 for f in params["freqs"] if f < LOW_FREQ_THRESHOLD) 
             for params in initParams_list
         )
         if include_phase:
-            total_oscillators +=2*total_low_freq_oscillators
+            total_oscillators +=2*total_low_freq_oscillators #cos and sin phase features for low freq oscs
         if include_pac:
-            total_oscillators +=total_low_freq_oscillators
+            total_oscillators +=total_low_freq_oscillators #each low freq oscillators interaction with 1 hg osc
 
-
-    # pre-allocate the feature matrix with the EXACT size needed
+    # pre-allocate the feature matrix with the size needed
     feat = np.zeros((numWindows, total_oscillators))
     
-    # iterate through channels and fill columns sequentially
+    # iterate through channels and fill columns of the matrix sequentially
     current_col = 0
 
-
     for ch_idx, (phase, allX_full, returnParams) in enumerate(results):
-        # allX_full shape is (time, freq, state_dim) where state_dim is usually 2 (sine/cosine)
+        # allX_full shape is (time, freq, state_dim) where state_dim is 2 (sine/cosine)
         amp_ch = np.sqrt(
             allX_full[:, :, 0]**2 +
             allX_full[:, :, 1]**2
         )
         phase_ch = np.angle(allX_full[:, :, 0] + 1j * allX_full[:, :, 1])
 
-
-        # Only fill the frequencies that this channel actually has
         n_freq_ch = amp_ch.shape[1]
         ch_freqs = initParams_list[ch_idx]['freqs']
-        assert len(ch_freqs) == n_freq_ch, "smth wrong with nr of oscillators and their frequencies"
+        assert len(ch_freqs) == n_freq_ch, "smth wrong with nr of oscillators and features"
+
         high_osc_idx = None
         if include_pac:
-            #get next high_osc_idx from initparams_list (which is the one most prominant in the signal since first found by somata, or else added from the template since init params is by that order)
+            #get next high_osc_idx from initparams_list, which is the one most prominant in the signal since it is the first one found by somata, or else added from the template  (since init params is by that order)
             for idx, freq in enumerate(ch_freqs):
                 if 70 < freq < 170:
                     high_osc_idx = idx
@@ -121,14 +133,14 @@ def extractSSPE(data, initParams_list, include_phase = True, include_pac = True,
             # Apply windowing to this specific oscillator
             for win in range(numWindows):
                 start = int(np.floor((win * frameshift) * sr))
-                stop = int(np.floor(start + windowLength * sr))
+                stop = int(np.floor(start + winL * sr))
                 
                 # Take the mean of the amplitude within the window
                 feat[win, current_col] = np.mean(osc_data[start:stop])
 
                 #get this osc's freq from initparams_list:
 
-                if ch_freqs[osc_idx] < PAC_FREQ_THRESHOLD:
+                if ch_freqs[osc_idx] < LOW_FREQ_THRESHOLD:
                     p_low = phase_ch[start:stop, osc_idx]
 
                     if include_phase:
@@ -151,130 +163,63 @@ def extractSSPE(data, initParams_list, include_phase = True, include_pac = True,
                             feat[win, current_col+1] = pac_feature
 
 
-            # Move to the next column in the global feature matrix
+            # Move to the next empty column in the global feature matrix 
             current_col += 1
-            if ch_freqs[osc_idx] < PAC_FREQ_THRESHOLD:
+            if ch_freqs[osc_idx] < LOW_FREQ_THRESHOLD:
                 if include_phase:
                     current_col += 2
                 if include_pac:
                     current_col += 1
-        #amp[:len(amp_ch), ch_idx, :n_freq_ch] = amp_ch
-    
     return feat
 
-
-
-def extractSSPE_sequential(data, initParams, use_channels=None, sr=1024, windowLength=0.05, frameshift=0.01):
+def extractHG(data):
     """
+    Extract high-gamma band envelope features from EEG data using Hilbert transform.
+    
+    This function windows the data, applies bandpass filtering in the high-gamma
+    range (70-170 Hz), removes line noise harmonics, and extracts the envelope
+    using the Hilbert transform.
+    
     Parameters
     ----------
-    data: array (samples, channels)
+    data : array (samples, channels)
         EEG time series
-    sr: int
-        Sampling rate of the data
-    windowLength: float
-        Length of window (in seconds) in which spectrogram will be calculated
-    frameshift: float
-        Shift (in seconds) after which next window will be extracted
-    Returns
-    ----------
-    feat: array (windows, channels)
-        Frequency-band feature matrix
-    """
-    eeg_sr=1024
-    #Linear detrend
-    data = scipy.signal.detrend(data,axis=0)
-    #Number of windows
-    numWindows = int(np.floor((data.shape[0]-windowLength*sr)/(frameshift*sr)))
-    
-    #remove (harmonics of) line noise
-    for i in range (0,5):
-        sos = scipy.signal.iirfilter(4, [(i*100+49)/(eeg_sr/2),(i*100+51)/(eeg_sr/2)],btype='bandstop',output='sos')
-        data = scipy.signal.sosfiltfilt(sos,data,axis=0)
-
-    #for data.shape == (samples, channels):
-    if use_channels != None:
-        n_channels = len(use_channels)
-    else:
-        n_channels = data.shape[1]
-    n_freq = len(initParams["freqs"])
-    amp = np.zeros((data.shape[0], n_channels, n_freq)) #amp.shape = (time, channels, freqs)
-    
-    for ch in range(n_channels):
-        #for ch in use_channels: #can do this to speed things up for now we only do a few channels
-        d = data[:, ch]
-        # causal phase estimation
-        phase, allX_full, returnParams = phaseEM.causalPhaseEM_MKmdl_noSeg(
-            d, initParams, flagNoFit=True
-        )
-        # amplitude from oscillator states
-        #amp_ch = np.sqrt(allX_full[:, 0]**2 + allX_full[:, 1]**2)
-        #amp[:len(amp_ch), ch] = amp_ch
-        amp_ch = np.sqrt(
-            allX_full[:, :, 0]**2 +
-            allX_full[:, :, 1]**2
-        )
-        amp[:len(amp_ch), ch, :] = amp_ch
         
-
-    #Create feature space
-    feat = np.zeros((numWindows, n_channels * n_freq)) #feat.shape = (windows, channels * freqs)
-
-    for win in range(numWindows):
-        start= int(np.floor((win*frameshift)*sr))
-        stop = int(np.floor(start+windowLength*sr))
-        #feat[win,:] = np.mean(amp[start:stop,:],axis=0)
-        window_amp = np.mean(amp[start:stop, :, :], axis=0)  # (channels, freqs)
-        feat[win, :] = window_amp.reshape(-1)
-    return feat
-
-def extractHG(data, sr, windowLength=0.05, frameshift=0.01):
-    """
-    Window data and extract frequency-band envelope using the hilbert transform
-    
-    Parameters
-    ----------
-    data: array (samples, channels)
-        EEG time series
-    sr: int
-        Sampling rate of the data
-    windowLength: float
-        Length of window (in seconds) in which spectrogram will be calculated
-    frameshift: float
-        Shift (in seconds) after which next window will be extracted
     Returns
-    ----------
-    feat: array (windows, channels)
-        Frequency-band feature matrix
+    -------
+    feat : array (windows, channels)
+        High-gamma envelope feature matrix. Each row corresponds to a time window
+        and each column to a channel.
     """
     #Linear detrend
     data = scipy.signal.detrend(data,axis=0)
     #Number of windows
-    numWindows = int(np.floor((data.shape[0]-windowLength*sr)/(frameshift*sr)))
+    numWindows = int(np.floor((data.shape[0]-winL*sr)/(frameshift*sr)))
     #Filter High-Gamma Band
     sos = scipy.signal.iirfilter(4, [70/(sr/2),170/(sr/2)],btype='bandpass',output='sos')
-    data = scipy.signal.sosfiltfilt(sos,data,axis=0)
+    #data = scipy.signal.sosfiltfilt(sos,data,axis=0) (original uncausal method, though it produces roughly the same result)
+    data = scipy.signal.sosfilt(sos,data,axis=0)
     
-
     #Attenuate first harmonic of line noise
     sos = scipy.signal.iirfilter(4, [98/(sr/2),102/(sr/2)],btype='bandstop',output='sos')
     data = scipy.signal.sosfiltfilt(sos,data,axis=0)
     #Attenuate second harmonic of line noise
     sos = scipy.signal.iirfilter(4, [148/(sr/2),152/(sr/2)],btype='bandstop',output='sos')
     data = scipy.signal.sosfiltfilt(sos,data,axis=0)
+
     #Create feature space
     data = np.abs(hilbert3(data))
     feat = np.zeros((numWindows,data.shape[1]))
     for win in range(numWindows):
         start= int(np.floor((win*frameshift)*sr))
-        stop = int(np.floor(start+windowLength*sr))
+        stop = int(np.floor(start+winL*sr))
         feat[win,:] = np.mean(data[start:stop,:],axis=0)
     return feat
 
 def stackFeatures(features, modelOrder=4, stepSize=5):
     """
     Add temporal context to each window by stacking neighboring feature vectors
-    
+
     Parameters
     ----------
     features: array (windows, channels)
@@ -291,20 +236,20 @@ def stackFeatures(features, modelOrder=4, stepSize=5):
     featStacked=np.zeros((features.shape[0]-(2*modelOrder*stepSize),(2*modelOrder+1)*features.shape[1]))
     for fNum,i in enumerate(range(modelOrder*stepSize,features.shape[0]-modelOrder*stepSize)):
         ef=features[i-modelOrder*stepSize:i+modelOrder*stepSize+1:stepSize,:]
-        featStacked[fNum,:]=ef.flatten() #Add 'F' if stacked the same as matlab
+        featStacked[fNum,:]=ef.flatten()
     return featStacked
 
-def downsampleLabels(labels, sr, windowLength=0.05, frameshift=0.01):
+def downsampleLabels(labels):
     """
     Downsamples non-numerical data by using the mode
-    
+
     Parameters
     ----------
-    labels: array of str
+    labels : array of str
         Label time series
     sr: int
         Sampling rate of the data
-    windowLength: float
+    winL: float
         Length of window (in seconds) in which mode will be used
     frameshift: float
         Shift (in seconds) after which next window will be extracted
@@ -313,27 +258,27 @@ def downsampleLabels(labels, sr, windowLength=0.05, frameshift=0.01):
     newLabels: array of str
         Downsampled labels
     """
-    numWindows=int(np.floor((labels.shape[0]-windowLength*sr)/(frameshift*sr)))
+    numWindows=int(np.floor((labels.shape[0]-winL*sr)/(frameshift*sr)))
     newLabels = np.empty(numWindows, dtype="S15")
     for w in range(numWindows):
         start = int(np.floor((w*frameshift)*sr))
-        stop = int(np.floor(start+windowLength*sr))
+        stop = int(np.floor(start+winL*sr))
         vals, counts = np.unique(labels[start:stop], return_counts=True)
         newLabels[w] = vals[np.argmax(counts)]
         #newLabels[w]=scipy.stats.mode(labels[start:stop])[0][0].encode("ascii", errors="ignore").decode()
     return newLabels
 
-def extractMelSpecs(audio, sr, windowLength=0.05, frameshift=0.01):
+def extractMelSpecs(audio, sr):
     """
     Extract logarithmic mel-scaled spectrogram, traditionally used to compress audio spectrograms
-    
+
     Parameters
     ----------
     audio: array
         Audio time series
     sr: int
         Sampling rate of the audio
-    windowLength: float
+    winL: float
         Length of window (in seconds) in which spectrogram will be calculated
     frameshift: float
         Shift (in seconds) after which next window will be extracted
@@ -344,12 +289,12 @@ def extractMelSpecs(audio, sr, windowLength=0.05, frameshift=0.01):
     spectrogram: array (numWindows, numFilter)
         Logarithmic mel scaled spectrogram
     """
-    numWindows=int(np.floor((audio.shape[0]-windowLength*sr)/(frameshift*sr)))
-    win = scipy.signal.windows.hann(int(np.floor(windowLength*sr + 1)))[:-1]
-    spectrogram = np.zeros((numWindows, int(np.floor(windowLength*sr / 2 + 1))),dtype='complex')
+    numWindows=int(np.floor((audio.shape[0]-winL*sr)/(frameshift*sr)))
+    win = scipy.signal.windows.hann(int(np.floor(winL*sr + 1)))[:-1]
+    spectrogram = np.zeros((numWindows, int(np.floor(winL*sr / 2 + 1))),dtype='complex')
     for w in range(numWindows):
         start_audio = int(np.floor((w*frameshift)*sr))
-        stop_audio = int(np.floor(start_audio+windowLength*sr))
+        stop_audio = int(np.floor(start_audio+winL*sr))
         a = audio[start_audio:stop_audio]
         spec = np.fft.rfft(win*a)
         spectrogram[w,:] = spec
@@ -361,7 +306,7 @@ def extractMelSpecs(audio, sr, windowLength=0.05, frameshift=0.01):
 def nameVector(elecs, modelOrder=4):
     """
     Creates list of electrode names
-    
+
     Parameters
     ----------
     elecs: array of str
@@ -381,26 +326,33 @@ def nameVector(elecs, modelOrder=4):
     return names.flatten()  #Add 'F' if stacked the same as matlab
 
 
-def run_extract_features(pt, initParams_list, SSPE=True):
-    '''
-    extracts eeg features, processes audio and alligns and saves everything for a single participant
+def run_extract_features(pt, initParams_list, SSPE=True, include_phase = True, include_pac = True, saveAs = None):
+    """
+    Extract EEG features, process audio, align data, and save for a single participant.
+    
+    This is the main pipeline function that loads data from NWB files, extracts
+    neural features (either SSPE or high-gamma), processes audio to mel spectrograms,
+    aligns the modalities temporally, and saves all outputs.
     
     Parameters
     ----------
-    pts: array
-        array of strings with the participants you want to analyze. e.g. pts = ['sub-01']
-    Fs: 2Darray
-        array with per participant, the frequencies you want to track if using the SSPE method. e.g. Fs = [[63, 78, 106]]
-    SSPE: boolean
-        True=use SSPE feature extraction. False=use HG extraction
-    '''
-    winL = 0.05
-    frameshift = 0.01
-    modelOrder = 4
-    stepSize = 5
-    path_bids = '/Users/lisa/Documents/DSAI_year2/Marble/SingleWordProductionDutch/SingleWordProductionDutch-iBIDS'
-    path_output = r'./features'
-        
+    pt : str
+        Participant identifier (e.g., 'sub-01')
+    initParams_list : list of dict
+        List of initialization parameters for SSPE algorithm per channel.
+        Required if SSPE=True.
+    SSPE : bool, optional
+        If True, use SSPE feature extraction. If False, use high-gamma extraction.
+        Default is True.
+    
+    The function saves the following files:
+    - {pt}_SSPEfeat.npy or {pt}_causalfeat.npy: Neural features
+    - {pt}_procWords.npy: Downsampled word labels
+    - {pt}_spec.npy: Mel spectrogram of recorded ground-truth audio
+    - {pt}_feat_names.npy: Feature names with temporal context
+    - {pt}_orig_audio.wav: Processed audio file
+    """
+    
     #Load data
     io = NWBHDF5IO(os.path.join(path_bids,pt,'ieeg',f'{pt}_task-wordProduction_ieeg.nwb'), 'r')
     nwbfile = io.read()
@@ -421,11 +373,11 @@ def run_extract_features(pt, initParams_list, SSPE=True):
     #Extract features
     if not SSPE:
         #Extract HG features
-        feat = extractHG(eeg, eeg_sr, windowLength=winL, frameshift=frameshift)
+        feat = extractHG(eeg)
     else:
-        #Extract SSPE features (all channels at once with channel-specific initParams)
-        feat = extractSSPE(eeg, initParams_list)
-        print("extracted features")
+        #Extract SSPE features
+        feat = extractSSPE(eeg, initParams_list, include_phase = include_phase, include_pac = include_pac)
+    print("extracted features")
     
     #Stack features
     feat = stackFeatures(feat,modelOrder=modelOrder,stepSize=stepSize)
@@ -439,10 +391,10 @@ def run_extract_features(pt, initParams_list, SSPE=True):
     scipy.io.wavfile.write(os.path.join(path_output,f'{pt}_orig_audio.wav'),audio_sr,scaled)   
 
     #Extract spectrogram
-    melSpec = extractMelSpecs(scaled,audio_sr,windowLength=winL,frameshift=frameshift)
+    melSpec = extractMelSpecs(scaled,audio_sr,winL=winL,frameshift=frameshift)
     
     #Align to EEG features
-    words = downsampleLabels(words,eeg_sr,windowLength=winL,frameshift=frameshift)
+    words = downsampleLabels(words,eeg_sr,winL=winL,frameshift=frameshift)
     words = words[modelOrder*stepSize:words.shape[0]-modelOrder*stepSize]
     melSpec = melSpec[modelOrder*stepSize:melSpec.shape[0]-modelOrder*stepSize,:]
     #adjust length (differences might occur due to rounding in the number of windows)
@@ -455,10 +407,13 @@ def run_extract_features(pt, initParams_list, SSPE=True):
     feature_names = nameVector(channels[:,None], modelOrder=modelOrder)
 
     #Save everything
-    if SSPE:
-        np.save(os.path.join(path_output,f'{pt}_SSPEfeat.npy'), feat)
+    if saveAs: 
+        np.save(os.path.join(path_output,f'{pt}{saveAs}.npy'), feat)
     else:
-        np.save(os.path.join(path_output,f'{pt}_causalfeat.npy'), feat)
+        if SSPE:
+            np.save(os.path.join(path_output,f'{pt}_SSPEfeat.npy'), feat)
+        else:
+            np.save(os.path.join(path_output,f'{pt}_causalfeat.npy'), feat)
     np.save(os.path.join(path_output,f'{pt}_procWords.npy'), words)
     np.save(os.path.join(path_output,f'{pt}_spec.npy'), melSpec)
     np.save(os.path.join(path_output,f'{pt}_feat_names.npy'), feature_names)
@@ -467,7 +422,5 @@ def run_extract_features(pt, initParams_list, SSPE=True):
 
 if __name__=="__main__":
     pts = ['sub-06']
-    Fs = [[1, 6, 26, 54, 73]]
-    ampVec = [1.0, 0.999, 0.991, 0.983, 0.970]
-    sigma = [6.56, 4.29, 3.55, 0.79, 0.35]
-    run_extract_features(pts,Fs, ampVec, sigma)
+    initParams_list = notebookfunctions.get_initParams('sub-06')
+    run_extract_features(pts,initParams_list)
