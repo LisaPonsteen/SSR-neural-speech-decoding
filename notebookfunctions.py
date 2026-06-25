@@ -185,7 +185,6 @@ def run_somata():
         # Save
         np.save(os.path.join(path_somata, f'{participant}_somata_results.npy'), channel_results)
 
-# Build initParams list for all channels according to rule 1.2
 def get_initParams(participant):
     """
     Build initialization parameters for SSPE algorithm for all channels.
@@ -208,27 +207,14 @@ def get_initParams(participant):
         windowSize, lowFreqBand
     """
     somata_results = np.load(os.path.join(path_somata,f'{participant}_somata_results.npy'),allow_pickle=True).item()
-    #gather all channels that have a peak in hg range (that we thus want to use for our base osc template)    
-    has_hg_osc = set()
-    for idx, data in somata_results.items():
-        if any(70 <= f <= 170 for f in data['freqs']):
-            #has_hg_osc.add(int(data['channel']))
-            has_hg_osc.add(idx)
-    hg_subset_results = {idx: somata_results[idx] for idx in has_hg_osc}
-    template_freqs = build_density_template(hg_subset_results)
-    template_a, template_s = get_template_parameters(hg_subset_results, template_freqs) 
+    template_freqs = build_density_template(somata_results)
+    template_a, template_s = get_template_parameters(somata_results, template_freqs) 
     template_freqs = np.array(template_freqs)
     template_a = np.array(template_a)
     template_s = np.array(template_s)
-    
-    # Find indices where template frequencies are in the HG range
-    hg_mask = (template_freqs >= 70) & (template_freqs <= 170)
-    
-    hg_only_f = template_freqs[hg_mask]
-    hg_only_a = template_a[hg_mask]
-    hg_only_s = template_s[hg_mask]
 
     initParams_list = []
+    nohgcount = 0
     for ch, _ in somata_results.items():
         initParams = {
             "freqs": somata_results[ch]['freqs'],
@@ -240,21 +226,21 @@ def get_initParams(participant):
             "lowFreqBand": None
         }
         if not any(70 <= f <= 170 for f in somata_results[ch]['freqs']):
-            #print ("no hg in somata")
+            nohgcount +=1
             initParams = {
-                "freqs": list(somata_results[ch]['freqs']) + list(hg_only_f),
+                "freqs": list(somata_results[ch]['freqs']) + list(template_freqs),
                 "Fs": sr,
-                "ampVec": list(somata_results[ch]['damping']) + list(hg_only_a),
-                "sigmaFreqs": list(somata_results[ch]['sigma2']) + list(hg_only_s),
+                "ampVec": list(somata_results[ch]['damping']) + list(template_a),
+                "sigmaFreqs": list(somata_results[ch]['sigma2']) + list(template_s),
                 "sigmaObs": 1,
                 "windowSize": 2000,
                 "lowFreqBand": None
             }
         initParams_list.append(initParams)
+    print (f"no hg in {nohgcount} channels")
     return initParams_list
 
 
-#average frequency template constructor by finding clusters in somata results
 def plot_density_template(results_dict, template_freqs, s, dens, all_freqs):
     """
     Plot the density template visualization for frequency cluster analysis.
@@ -301,12 +287,11 @@ def plot_density_template(results_dict, template_freqs, s, dens, all_freqs):
     plt.legend(fontsize = 16)
     plt.show()
 
-
-def build_density_template(results_dict, nr_osc = 3, min_hg_osc=2, verbose = False):
+def build_density_template(results_dict, nr_hg_osc=2, verbose = True):
     """
     Build a frequency template by clustering SOMATA results using kernel density estimation.
     
-    This function extracts frequencies from channels with high-gamma oscillators,
+    This function extracts high-gamma oscillators from all channels of a participant,
     fits a kernel density estimate, finds peaks in the density, and selects the
     strongest peaks as the template frequencies.
     
@@ -314,11 +299,8 @@ def build_density_template(results_dict, nr_osc = 3, min_hg_osc=2, verbose = Fal
     ----------
     results_dict : dict
         Dictionary of SOMATA results per channel
-    nr_osc : int, optional
-        Number of strongest peaks to select as template. Default is 3.
-    min_hg_osc : int, optional
-        Minimum number of high-gamma oscillators to include in template.
-        Default is 2.
+    nr_hg_osc : int, optional
+        Number of strongest peaks to select as template. Default is 2.
     verbose : bool, optional
         If True, plot the density template visualization. Default is False.
         
@@ -327,10 +309,10 @@ def build_density_template(results_dict, nr_osc = 3, min_hg_osc=2, verbose = Fal
     template : list
         Sorted list of template frequencies in Hz
     """
+    #make a list of all frequencies found by SOMATA in the hg region
     all_freqs = []
     for ch, data in results_dict.items():
-        if any(70 <= f <= 170 for f in data['freqs']):
-            all_freqs.extend(data['freqs'])
+        all_freqs.extend([f for f in data['freqs'] if 70 <= f <= 170])
 
     #print(f'nr of frequencies in somata results in total: {len(all_freqs)}')
     #print(f'all frequencies found: {sorted(all_freqs)}')
@@ -340,8 +322,8 @@ def build_density_template(results_dict, nr_osc = 3, min_hg_osc=2, verbose = Fal
     # Fit KDE (bandwidth=3 means it treats freqs within ~3-5Hz as 'together')
     kde = KernelDensity(kernel='gaussian', bandwidth=2).fit(X)
     
-    # Evaluate density across the spectrum (0 to 170 Hz)
-    s = np.linspace(0, 170, 1000).reshape(-1, 1)
+    # Evaluate density across the spectrum (70 to 170 Hz)
+    s = np.linspace(70, 170, 1000).reshape(-1, 1)
     log_dens = kde.score_samples(s)
     dens = np.exp(log_dens)
     
@@ -351,19 +333,12 @@ def build_density_template(results_dict, nr_osc = 3, min_hg_osc=2, verbose = Fal
 
     #print(f'peak_freqs: {peak_freqs}')
     
-
-    # For non HG, pick the top nr_osc strongest peaks
     # Sort peaks by their density (height)
     peaks_sorted = sorted(peak_freqs, key=lambda f: dens[np.argmin(np.abs(s-f))], reverse=True)
-    template = set(peaks_sorted[:nr_osc])
-
-    
-    #if less hg peaks included then minimal:
-    if len([f for f in template if 70 <= f <= 170]) <min_hg_osc:
-        hg_peaks = [f for f in peak_freqs if 70 <= f <= 170]
-        # Sort HG peaks by their density (height)
-        hg_peaks_sorted = sorted(hg_peaks, key=lambda f: dens[np.argmin(np.abs(s-f))], reverse=True)
-        template.update(hg_peaks_sorted[:min_hg_osc])
+    if len(peaks_sorted) <nr_hg_osc:
+        template = set(peaks_sorted)
+    else:
+        template = set(peaks_sorted[:nr_hg_osc])
 
     if verbose:
         plot_density_template(results_dict, template, s, dens, all_freqs)
@@ -385,8 +360,7 @@ def get_template_parameters(results_dict, template_freqs, window=7):
     template_freqs : list
         Template frequencies to get parameters for
     window : int, optional
-        Frequency window for matching (Hz). Default is 7, but reduced to 2 for
-        frequencies below 10 Hz.
+        Frequency window for matching (Hz). Default is 7 - maybe make this smaller?
         
     Returns
     -------
@@ -399,7 +373,6 @@ def get_template_parameters(results_dict, template_freqs, window=7):
     final_s = []
     
     for target_f in template_freqs:
-        window = 2 if target_f < 10 else 7
         matching_as = []
         matching_ss = []
         
@@ -416,12 +389,13 @@ def get_template_parameters(results_dict, template_freqs, window=7):
                 matching_as.extend(ch_as[matches])
                 matching_ss.extend(ch_ss[matches])
         
-        # Calculate mean for this peak. Fallback to sensible defaults if no match.
+        # Calculate mean for this peak.
         if matching_as:
             final_a.append(np.mean(matching_as))
             final_s.append(np.mean(matching_ss))
         else:
-            # Default values if a cluster has no close contributors (shouldn't happen)
+            # Default values if a cluster has no close contributors (doesn't happen)
+            print(f"No matches found for template frequency {target_f}")
             final_a.append(0.98) 
             final_s.append(0.5)
             
